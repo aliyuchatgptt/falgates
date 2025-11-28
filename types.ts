@@ -13,7 +13,17 @@ export interface StaffMember {
   assignedUnit: DistributionUnit;
   registeredAt: number;
   faceEmbedding: number[]; // Mocked vector for local persistence structure
-  referenceImageBase64: string; // Stored for visual comparison
+  referenceImageBase64: string; // Primary image for display/thumbnail
+}
+
+export type ImageAngleType = 'front' | 'left' | 'right';
+
+export interface StaffImage {
+  id?: number; // Auto-incremented by DB
+  staffId: string;
+  imageBase64: string;
+  angleType: ImageAngleType;
+  createdAt?: number;
 }
 
 export interface CheckInLog {

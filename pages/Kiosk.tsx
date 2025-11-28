@@ -1,18 +1,45 @@
 import React, { useState, useEffect } from 'react';
 import { CameraFrame } from '../components/CameraFrame';
 import { dbService } from '../services/db';
-import { verifyIdentityWithGemini } from '../services/geminiService';
-import { StaffMember, RecognitionResult } from '../types';
+import { verifyIdentityWithConsensus } from '../services/geminiService';
+import { StaffMember, RecognitionResult, StaffImage } from '../types';
 import { Loader2, ShieldCheck, ShieldAlert } from 'lucide-react';
+
+// Cache for staff images to avoid fetching on every verification
+interface StaffWithImages extends StaffMember {
+  images: StaffImage[];
+}
 
 export const Kiosk: React.FC = () => {
   const [mode, setMode] = useState<'IDLE' | 'SCANNING' | 'SUCCESS' | 'FAILURE'>('IDLE');
   const [result, setResult] = useState<RecognitionResult | null>(null);
-  const [staffList, setStaffList] = useState<StaffMember[]>([]);
+  const [staffList, setStaffList] = useState<StaffWithImages[]>([]);
+  const [loadingStaff, setLoadingStaff] = useState(true);
 
   useEffect(() => {
-    dbService.getAllStaff().then(setStaffList).catch(console.error);
+    loadStaffWithImages();
   }, []);
+
+  const loadStaffWithImages = async () => {
+    try {
+      setLoadingStaff(true);
+      const staff = await dbService.getAllStaff();
+      
+      // Load images for each staff member
+      const staffWithImages: StaffWithImages[] = await Promise.all(
+        staff.map(async (s) => {
+          const images = await dbService.getStaffImages(s.id);
+          return { ...s, images };
+        })
+      );
+      
+      setStaffList(staffWithImages);
+    } catch (e) {
+      console.error("Failed to load staff:", e);
+    } finally {
+      setLoadingStaff(false);
+    }
+  };
 
   const handleLiveCapture = async (liveImage: string) => {
     if (mode === 'SCANNING') return;
@@ -28,11 +55,26 @@ export const Kiosk: React.FC = () => {
 
     try {
       let foundMatch: RecognitionResult | null = null;
-      // Demo logic: Check first few staff members to save tokens/time
-      // In production with real embeddings, you'd sort by vector distance first
+
       for (const staff of staffList) {
-        const verify = await verifyIdentityWithGemini(liveImage, staff.referenceImageBase64);
-        if (verify.match && verify.confidence > 80) {
+        // Get all reference images for this staff member
+        const referenceImages = staff.images.length > 0
+          ? staff.images.map(img => img.imageBase64)
+          : [staff.referenceImageBase64]; // Fallback to primary image if no multi-images
+
+        // Use consensus-based verification
+        // Require 2 matches if 3 images exist, otherwise 1 match for legacy single-image enrollments
+        const requiredMatches = referenceImages.length >= 3 ? 2 : 1;
+        const confidenceThreshold = 85;
+
+        const verify = await verifyIdentityWithConsensus(
+          liveImage,
+          referenceImages,
+          requiredMatches,
+          confidenceThreshold
+        );
+
+        if (verify.match) {
           foundMatch = {
             isMatch: true,
             confidence: verify.confidence,
@@ -47,7 +89,7 @@ export const Kiosk: React.FC = () => {
         setResult(foundMatch);
         setMode('SUCCESS');
 
-        // --- Log the Check-In ---
+        // Log the Check-In
         await dbService.logCheckIn({
           staffId: foundMatch.staffMember.id,
           staffName: foundMatch.staffMember.fullName,
@@ -57,7 +99,7 @@ export const Kiosk: React.FC = () => {
         });
 
       } else {
-        setResult({ isMatch: false, confidence: 0, message: "Identity could not be verified." });
+        setResult({ isMatch: false, confidence: 0, message: "Identity could not be verified. Please ensure you are registered and try in better lighting." });
         setMode('FAILURE');
       }
     } catch (e) {
@@ -71,6 +113,17 @@ export const Kiosk: React.FC = () => {
       }, 5000);
     }
   };
+
+  if (loadingStaff) {
+    return (
+      <div className="h-full w-full flex items-center justify-center bg-black">
+        <div className="text-center">
+          <Loader2 className="w-12 h-12 text-emerald-400 animate-spin mx-auto mb-4" />
+          <p className="text-slate-400">Loading staff database...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full w-full flex flex-col relative bg-black overflow-hidden">
@@ -89,6 +142,7 @@ export const Kiosk: React.FC = () => {
           <div className="absolute inset-0 bg-black/40 z-10 flex flex-col items-center justify-center backdrop-blur-sm animate-in fade-in duration-300">
             <Loader2 className="w-16 h-16 text-emerald-400 animate-spin mb-4" />
             <div className="text-emerald-400 font-mono text-xl tracking-widest animate-pulse">PROCESSING</div>
+            <p className="text-slate-400 text-sm mt-2">Verifying against multiple reference images...</p>
           </div>
         )}
 
@@ -123,7 +177,8 @@ export const Kiosk: React.FC = () => {
                 <ShieldCheck size={40} />
               </div>
               <h2 className="text-emerald-400 text-sm font-bold uppercase tracking-wider mb-1">Access Granted</h2>
-              <h1 className="text-3xl font-bold text-white mb-6">{result.staffMember.fullName}</h1>
+              <h1 className="text-3xl font-bold text-white mb-2">{result.staffMember.fullName}</h1>
+              <p className="text-emerald-400/70 text-xs mb-6">{result.message}</p>
               
               <div className="grid grid-cols-2 gap-4">
                 <div className="bg-slate-800 p-4 rounded-2xl border border-slate-700">

@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { StaffMember, CheckInLog } from '../types';
+import { StaffMember, CheckInLog, StaffImage, ImageAngleType } from '../types';
 
 // Supabase configuration
 const SUPABASE_URL = 'https://zynxqtboqwciuabblsqq.supabase.co';
@@ -22,6 +22,14 @@ interface CheckInRow {
   assigned_unit: string;
   timestamp: number;
   confidence_score: number;
+}
+
+interface StaffImageRow {
+  id?: number;
+  staff_id: string;
+  image_base64: string;
+  angle_type: string;
+  created_at?: number;
 }
 
 // Convert between app types (camelCase) and database types (snake_case)
@@ -65,6 +73,24 @@ function checkInLogToRow(log: CheckInLog): Omit<CheckInRow, 'id'> {
     assigned_unit: log.assignedUnit,
     timestamp: log.timestamp,
     confidence_score: log.confidenceScore,
+  };
+}
+
+function staffImageRowToImage(row: StaffImageRow): StaffImage {
+  return {
+    id: row.id,
+    staffId: row.staff_id,
+    imageBase64: row.image_base64,
+    angleType: row.angle_type as ImageAngleType,
+    createdAt: row.created_at,
+  };
+}
+
+function staffImageToRow(image: StaffImage): Omit<StaffImageRow, 'id' | 'created_at'> {
+  return {
+    staff_id: image.staffId,
+    image_base64: image.imageBase64,
+    angle_type: image.angleType,
   };
 }
 
@@ -241,6 +267,47 @@ class SupabaseDatabase {
     
     if (error) {
       throw new Error(`Error deleting setting: ${error.message}`);
+    }
+  }
+
+  // --- Staff Images Methods ---
+
+  async addStaffImages(staffId: string, images: Omit<StaffImage, 'id' | 'staffId' | 'createdAt'>[]): Promise<void> {
+    const rows = images.map(img => ({
+      staff_id: staffId,
+      image_base64: img.imageBase64,
+      angle_type: img.angleType,
+    }));
+
+    const { error } = await this.supabase.from('staff_images').insert(rows);
+    
+    if (error) {
+      throw new Error(`Error adding staff images: ${error.message}`);
+    }
+  }
+
+  async getStaffImages(staffId: string): Promise<StaffImage[]> {
+    const { data, error } = await this.supabase
+      .from('staff_images')
+      .select('*')
+      .eq('staff_id', staffId)
+      .order('created_at', { ascending: true });
+    
+    if (error) {
+      throw new Error(`Error fetching staff images: ${error.message}`);
+    }
+    
+    return (data as StaffImageRow[]).map(staffImageRowToImage);
+  }
+
+  async deleteStaffImages(staffId: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('staff_images')
+      .delete()
+      .eq('staff_id', staffId);
+    
+    if (error) {
+      throw new Error(`Error deleting staff images: ${error.message}`);
     }
   }
 }

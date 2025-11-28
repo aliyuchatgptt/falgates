@@ -90,8 +90,28 @@ export const checkImageQuality = async (imageBase64: string): Promise<{ valid: b
   }
 };
 
+// Enhanced prompt for facial recognition with specific landmark focus
+const VERIFICATION_PROMPT = `You are a facial recognition expert. Compare the REFERENCE image (first) with the LIVE capture (second).
+
+Analyze these specific facial features:
+1. FACE SHAPE: Overall face structure (oval, round, square, heart-shaped)
+2. EYES: Shape, spacing, brow ridge, and eye socket depth
+3. NOSE: Bridge width, tip shape, nostril shape
+4. MOUTH: Lip shape, mouth width relative to face
+5. JAW/CHIN: Jawline definition, chin shape
+6. EARS: Position, size (if visible)
+7. FACIAL PROPORTIONS: Distance ratios between features
+
+IMPORTANT RULES:
+- Focus on STRUCTURAL features that don't change (bone structure, eye spacing, nose shape)
+- IGNORE temporary differences: lighting, expression, glasses, facial hair, makeup, head angle
+- Be STRICT: Only mark as match if you're highly confident it's the same person
+- A confidence below 75 should result in match=false
+
+Provide your analysis with a confidence score from 0-100.`;
+
 /**
- * Uses Gemini to compare a live capture against a reference image.
+ * Uses Gemini to compare a live capture against a reference image with enhanced prompts.
  */
 export const verifyIdentityWithGemini = async (
   liveImageBase64: string, 
@@ -108,7 +128,7 @@ export const verifyIdentityWithGemini = async (
         parts: [
             { inlineData: { mimeType: "image/jpeg", data: cleanRef } },
             { inlineData: { mimeType: "image/jpeg", data: cleanLive } },
-            { text: "Compare these two images. Do they appear to be the same person? Ignore minor differences in lighting or accessories. Provide a confidence score from 0 to 100." }
+            { text: VERIFICATION_PROMPT }
         ]
       },
       config: {
@@ -116,9 +136,9 @@ export const verifyIdentityWithGemini = async (
         responseSchema: {
           type: Type.OBJECT,
           properties: {
-            match: { type: Type.BOOLEAN },
-            confidence: { type: Type.NUMBER },
-            explanation: { type: Type.STRING }
+            match: { type: Type.BOOLEAN, description: "True only if highly confident it's the same person" },
+            confidence: { type: Type.NUMBER, description: "Confidence score 0-100 based on facial landmark analysis" },
+            explanation: { type: Type.STRING, description: "Brief explanation of key matching/non-matching features" }
           },
           required: ["match", "confidence", "explanation"]
         }
@@ -132,6 +152,55 @@ export const verifyIdentityWithGemini = async (
     console.error("Gemini Verification Error:", error);
     return { match: false, confidence: 0, explanation: "AI Service Unavailable" };
   }
+};
+
+/**
+ * Verifies identity against multiple reference images using consensus matching.
+ * Returns a match only if the majority of images agree.
+ */
+export const verifyIdentityWithConsensus = async (
+  liveImageBase64: string,
+  referenceImages: string[],
+  requiredMatches: number = 2,
+  confidenceThreshold: number = 85
+): Promise<{ match: boolean; confidence: number; explanation: string; matchCount: number }> => {
+  if (referenceImages.length === 0) {
+    return { match: false, confidence: 0, explanation: "No reference images available", matchCount: 0 };
+  }
+
+  const results: { match: boolean; confidence: number; explanation: string }[] = [];
+  
+  // Compare against each reference image
+  for (const refImage of referenceImages) {
+    const result = await verifyIdentityWithGemini(liveImageBase64, refImage);
+    results.push(result);
+  }
+
+  // Count matches that meet the confidence threshold
+  const validMatches = results.filter(r => r.match && r.confidence >= confidenceThreshold);
+  const matchCount = validMatches.length;
+  
+  // Calculate average confidence of valid matches (or all results if no valid matches)
+  const avgConfidence = validMatches.length > 0
+    ? validMatches.reduce((sum, r) => sum + r.confidence, 0) / validMatches.length
+    : results.reduce((sum, r) => sum + r.confidence, 0) / results.length;
+
+  // Consensus: require minimum number of matches
+  const isMatch = matchCount >= requiredMatches;
+  
+  // Build explanation
+  const explanation = isMatch
+    ? `Verified with ${matchCount}/${referenceImages.length} image matches (avg ${avgConfidence.toFixed(0)}% confidence)`
+    : matchCount > 0
+      ? `Only ${matchCount}/${referenceImages.length} matches (need ${requiredMatches}). ${results[0]?.explanation || ''}`
+      : `No matches found. ${results[0]?.explanation || 'Identity could not be verified.'}`;
+
+  return {
+    match: isMatch,
+    confidence: avgConfidence,
+    explanation,
+    matchCount
+  };
 };
 
 export const generateStaffInsights = async (staff: StaffMember[]): Promise<string> => {
