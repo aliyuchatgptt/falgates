@@ -1,23 +1,46 @@
 
 import { GoogleGenAI, Type } from "@google/genai";
 import { StaffMember } from "../types";
+import { dbService } from "./db";
 
 // We use the new Flash 2.5 for speed and multimodal capabilities.
 const MODEL_NAME = "gemini-2.5-flash";
 
-const getClient = () => {
-  // Check Local Storage first (User Override/Fallback)
-  const localKey = localStorage.getItem("GEMINI_API_KEY");
-  // Then check Environment Variable
+// Cache the API key to avoid fetching from DB on every call
+let cachedApiKey: string | null = null;
+
+const getClient = async () => {
+  // Check cached key first
+  if (cachedApiKey) {
+    return new GoogleGenAI({ apiKey: cachedApiKey });
+  }
+
+  // Fetch from Supabase database
+  try {
+    const dbKey = await dbService.getSetting("GEMINI_API_KEY");
+    if (dbKey) {
+      cachedApiKey = dbKey;
+      return new GoogleGenAI({ apiKey: dbKey });
+    }
+  } catch (e) {
+    console.error("Failed to fetch API key from database:", e);
+  }
+
+  // Fallback to Environment Variable
   const envKey = process.env.API_KEY;
-  
-  // Handle case where bundler might inject the string "undefined"
   const validEnvKey = envKey && envKey !== "undefined" ? envKey : null;
 
-  const apiKey = localKey || validEnvKey;
+  if (validEnvKey) {
+    cachedApiKey = validEnvKey;
+    return new GoogleGenAI({ apiKey: validEnvKey });
+  }
 
-  if (!apiKey) throw new Error("API Key not found. Please configure it in Settings.");
-  return new GoogleGenAI({ apiKey });
+  throw new Error("API Key not found. Please configure it in Settings.");
+};
+
+// Clear cached key (call this when key is updated)
+export const clearApiKeyCache = () => {
+  cachedApiKey = null;
 };
 
 // Helper to strip markdown code blocks if Gemini adds them
@@ -34,7 +57,7 @@ const parseJSON = (text: string | undefined) => {
 
 export const checkImageQuality = async (imageBase64: string): Promise<{ valid: boolean; reason: string }> => {
   try {
-    const ai = getClient();
+    const ai = await getClient();
     const cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, "");
     
     const response = await ai.models.generateContent({
@@ -75,7 +98,7 @@ export const verifyIdentityWithGemini = async (
   referenceImageBase64: string
 ): Promise<{ match: boolean; confidence: number; explanation: string }> => {
   try {
-    const ai = getClient();
+    const ai = await getClient();
     const cleanLive = liveImageBase64.replace(/^data:image\/\w+;base64,/, "");
     const cleanRef = referenceImageBase64.replace(/^data:image\/\w+;base64,/, "");
 
@@ -113,7 +136,7 @@ export const verifyIdentityWithGemini = async (
 
 export const generateStaffInsights = async (staff: StaffMember[]): Promise<string> => {
   try {
-    const ai = getClient();
+    const ai = await getClient();
     const distribution = staff.reduce((acc, curr) => {
       acc[curr.assignedUnit] = (acc[curr.assignedUnit] || 0) + 1;
       return acc;

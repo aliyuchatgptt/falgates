@@ -1,89 +1,128 @@
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { StaffMember, CheckInLog } from '../types';
 
-const DB_NAME = 'FalgatesRiceDB';
-const DB_VERSION = 2; // Incremented to support new object store
-const STAFF_STORE = 'staff';
-const CHECKIN_STORE = 'check_ins';
+// Supabase configuration
+const SUPABASE_URL = 'https://zynxqtboqwciuabblsqq.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp5bnhxdGJvcXdjaXVhYmJsc3FxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjQzNDY1ODEsImV4cCI6MjA3OTkyMjU4MX0.5GhRESWXxZYyIXjNyl0-LenDinDlJf7E4Z22bBbeFRs';
 
-class LocalDatabase {
-  private db: IDBDatabase | null = null;
+// Database row types (snake_case as stored in Supabase)
+interface StaffRow {
+  id: string;
+  full_name: string;
+  assigned_unit: string;
+  registered_at: number;
+  face_embedding: number[];
+  reference_image_base64: string;
+}
+
+interface CheckInRow {
+  id?: number;
+  staff_id: string;
+  staff_name: string;
+  assigned_unit: string;
+  timestamp: number;
+  confidence_score: number;
+}
+
+// Convert between app types (camelCase) and database types (snake_case)
+function staffRowToMember(row: StaffRow): StaffMember {
+  return {
+    id: row.id,
+    fullName: row.full_name,
+    assignedUnit: row.assigned_unit as StaffMember['assignedUnit'],
+    registeredAt: row.registered_at,
+    faceEmbedding: row.face_embedding,
+    referenceImageBase64: row.reference_image_base64,
+  };
+}
+
+function staffMemberToRow(member: StaffMember): StaffRow {
+  return {
+    id: member.id,
+    full_name: member.fullName,
+    assigned_unit: member.assignedUnit,
+    registered_at: member.registeredAt,
+    face_embedding: member.faceEmbedding,
+    reference_image_base64: member.referenceImageBase64,
+  };
+}
+
+function checkInRowToLog(row: CheckInRow): CheckInLog {
+  return {
+    id: row.id,
+    staffId: row.staff_id,
+    staffName: row.staff_name,
+    assignedUnit: row.assigned_unit as CheckInLog['assignedUnit'],
+    timestamp: row.timestamp,
+    confidenceScore: row.confidence_score,
+  };
+}
+
+function checkInLogToRow(log: CheckInLog): Omit<CheckInRow, 'id'> {
+  return {
+    staff_id: log.staffId,
+    staff_name: log.staffName,
+    assigned_unit: log.assignedUnit,
+    timestamp: log.timestamp,
+    confidence_score: log.confidenceScore,
+  };
+}
+
+class SupabaseDatabase {
+  private supabase: SupabaseClient;
+
+  constructor() {
+    this.supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  }
 
   async connect(): Promise<void> {
-    if (this.db) return;
-
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-      request.onerror = () => reject('Error opening database');
-
-      request.onsuccess = (event) => {
-        this.db = (event.target as IDBOpenDBRequest).result;
-        resolve();
-      };
-
-      request.onupgradeneeded = (event) => {
-        const db = (event.target as IDBOpenDBRequest).result;
-        
-        // Create Staff Store if not exists
-        if (!db.objectStoreNames.contains(STAFF_STORE)) {
-          db.createObjectStore(STAFF_STORE, { keyPath: 'id' });
-        }
-
-        // Create Check-In Logs Store if not exists
-        if (!db.objectStoreNames.contains(CHECKIN_STORE)) {
-          const checkInStore = db.createObjectStore(CHECKIN_STORE, { keyPath: 'id', autoIncrement: true });
-          checkInStore.createIndex('staffId', 'staffId', { unique: false });
-          checkInStore.createIndex('timestamp', 'timestamp', { unique: false });
-        }
-      };
-    });
+    // Supabase client is ready immediately, no connection needed
+    // This method is kept for API compatibility
   }
 
   async addStaff(staff: StaffMember): Promise<void> {
-    await this.connect();
-    return new Promise((resolve, reject) => {
-      if (!this.db) return reject('Database not initialized');
-      const transaction = this.db.transaction([STAFF_STORE], 'readwrite');
-      const store = transaction.objectStore(STAFF_STORE);
-      const request = store.add(staff);
-
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject('Error adding staff: ID might already exist');
-    });
+    const row = staffMemberToRow(staff);
+    const { error } = await this.supabase.from('staff').insert(row);
+    
+    if (error) {
+      throw new Error(`Error adding staff: ${error.message}`);
+    }
   }
 
   async getAllStaff(): Promise<StaffMember[]> {
-    await this.connect();
-    return new Promise((resolve, reject) => {
-      if (!this.db) return reject('Database not initialized');
-      const transaction = this.db.transaction([STAFF_STORE], 'readonly');
-      const store = transaction.objectStore(STAFF_STORE);
-      const request = store.getAll();
-
-      request.onsuccess = () => resolve(request.result as StaffMember[]);
-      request.onerror = () => reject('Error fetching staff');
-    });
+    const { data, error } = await this.supabase
+      .from('staff')
+      .select('*')
+      .order('registered_at', { ascending: false });
+    
+    if (error) {
+      throw new Error(`Error fetching staff: ${error.message}`);
+    }
+    
+    return (data as StaffRow[]).map(staffRowToMember);
   }
 
   async deleteStaff(id: string): Promise<void> {
-    await this.connect();
-    return new Promise((resolve, reject) => {
-      if (!this.db) return reject('Database not initialized');
-      const transaction = this.db.transaction([STAFF_STORE], 'readwrite');
-      const store = transaction.objectStore(STAFF_STORE);
-      const request = store.delete(id);
-
-      request.onsuccess = () => resolve();
-      request.onerror = () => reject('Error deleting staff');
-    });
+    const { error } = await this.supabase.from('staff').delete().eq('id', id);
+    
+    if (error) {
+      throw new Error(`Error deleting staff: ${error.message}`);
+    }
   }
 
   async getNextId(): Promise<string> {
-    await this.connect();
-    const staff = await this.getAllStaff();
-    if (staff.length === 0) return 'FG0001';
+    const { data, error } = await this.supabase
+      .from('staff')
+      .select('id')
+      .order('id', { ascending: false });
+    
+    if (error) {
+      throw new Error(`Error generating ID: ${error.message}`);
+    }
+    
+    if (!data || data.length === 0) return 'FG0001';
 
-    const maxNum = staff.reduce((max, s) => {
+    const maxNum = data.reduce((max: number, s: { id: string }) => {
       const numStr = s.id.replace(/[^0-9]/g, '');
       const num = parseInt(numStr, 10);
       return isNaN(num) ? max : Math.max(max, num);
@@ -96,76 +135,59 @@ class LocalDatabase {
   // --- Check-In Logging Methods ---
 
   async logCheckIn(log: CheckInLog): Promise<void> {
-    await this.connect();
-    return new Promise((resolve, reject) => {
-      if (!this.db) return reject('Database not initialized');
-      const transaction = this.db.transaction([CHECKIN_STORE], 'readwrite');
-      const store = transaction.objectStore(CHECKIN_STORE);
-      // Remove id if present to let autoIncrement handle it, though strictly not required if undefined
-      const { id, ...logData } = log; 
-      const request = store.add(logData);
-
-      request.onsuccess = () => resolve();
-      request.onerror = (e) => reject(e);
-    });
+    const row = checkInLogToRow(log);
+    const { error } = await this.supabase.from('check_ins').insert(row);
+    
+    if (error) {
+      throw new Error(`Error logging check-in: ${error.message}`);
+    }
   }
 
   async getRecentCheckIns(limit: number = 50): Promise<CheckInLog[]> {
-    await this.connect();
-    return new Promise((resolve, reject) => {
-      if (!this.db) return reject('Database not initialized');
-      const transaction = this.db.transaction([CHECKIN_STORE], 'readonly');
-      const store = transaction.objectStore(CHECKIN_STORE);
-      const index = store.index('timestamp');
-      
-      // Open cursor in reverse order (newest first)
-      const request = index.openCursor(null, 'prev');
-      const results: CheckInLog[] = [];
-
-      request.onsuccess = (event) => {
-        const cursor = (event.target as IDBRequest).result as IDBCursorWithValue;
-        if (cursor && results.length < limit) {
-          results.push(cursor.value);
-          cursor.continue();
-        } else {
-          resolve(results);
-        }
-      };
-      request.onerror = () => reject('Error fetching check-ins');
-    });
+    const { data, error } = await this.supabase
+      .from('check_ins')
+      .select('*')
+      .order('timestamp', { ascending: false })
+      .limit(limit);
+    
+    if (error) {
+      throw new Error(`Error fetching check-ins: ${error.message}`);
+    }
+    
+    return (data as CheckInRow[]).map(checkInRowToLog);
   }
 
   async clearAllData(): Promise<void> {
-    await this.connect();
-    return new Promise((resolve, reject) => {
-      if (!this.db) return reject('Database not initialized');
-      const transaction = this.db.transaction([STAFF_STORE, CHECKIN_STORE], 'readwrite');
-      
-      transaction.onerror = () => reject('Error clearing data');
-      transaction.oncomplete = () => resolve();
-
-      transaction.objectStore(STAFF_STORE).clear();
-      transaction.objectStore(CHECKIN_STORE).clear();
-    });
+    // Delete check_ins first due to foreign key constraint
+    const { error: checkInsError } = await this.supabase.from('check_ins').delete().neq('id', 0);
+    if (checkInsError) {
+      throw new Error(`Error clearing check-ins: ${checkInsError.message}`);
+    }
+    
+    const { error: staffError } = await this.supabase.from('staff').delete().neq('id', '');
+    if (staffError) {
+      throw new Error(`Error clearing staff: ${staffError.message}`);
+    }
   }
 
   async exportAllData(): Promise<void> {
-    await this.connect();
     const staff = await this.getAllStaff();
     
-    const checkIns = await new Promise<CheckInLog[]>((resolve, reject) => {
-      if (!this.db) return reject('Database not initialized');
-      const transaction = this.db.transaction([CHECKIN_STORE], 'readonly');
-      const store = transaction.objectStore(CHECKIN_STORE);
-      const request = store.getAll();
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject('Error fetching checkins');
-    });
+    const { data: checkInsData, error } = await this.supabase
+      .from('check_ins')
+      .select('*')
+      .order('timestamp', { ascending: false });
+    
+    if (error) {
+      throw new Error(`Error fetching check-ins for export: ${error.message}`);
+    }
+    
+    const checkIns = (checkInsData as CheckInRow[]).map(checkInRowToLog);
 
     const exportData = {
-        timestamp: Date.now(),
-        staff,
-        checkIns
+      timestamp: Date.now(),
+      staff,
+      checkIns
     };
 
     const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
@@ -178,6 +200,49 @@ class LocalDatabase {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   }
+
+  // --- Settings Methods ---
+
+  async getSetting(key: string): Promise<string | null> {
+    const { data, error } = await this.supabase
+      .from('settings')
+      .select('value')
+      .eq('key', key)
+      .single();
+    
+    if (error) {
+      // PGRST116 means no rows found, which is not an error for us
+      if (error.code === 'PGRST116') return null;
+      throw new Error(`Error fetching setting: ${error.message}`);
+    }
+    
+    return data?.value || null;
+  }
+
+  async setSetting(key: string, value: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('settings')
+      .upsert({
+        key,
+        value,
+        updated_at: Date.now()
+      }, { onConflict: 'key' });
+    
+    if (error) {
+      throw new Error(`Error saving setting: ${error.message}`);
+    }
+  }
+
+  async deleteSetting(key: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('settings')
+      .delete()
+      .eq('key', key);
+    
+    if (error) {
+      throw new Error(`Error deleting setting: ${error.message}`);
+    }
+  }
 }
 
-export const dbService = new LocalDatabase();
+export const dbService = new SupabaseDatabase();

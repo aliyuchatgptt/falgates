@@ -1,7 +1,9 @@
 
 import React, { useState, useEffect } from 'react';
 import { AppRoute } from '../types';
-import { ArrowLeft, Save, Key, Shield, CheckCircle, AlertCircle } from 'lucide-react';
+import { dbService } from '../services/db';
+import { clearApiKeyCache } from '../services/geminiService';
+import { ArrowLeft, Save, Key, Shield, CheckCircle, AlertCircle, Loader2 } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
 
 interface ApiConfigProps {
@@ -10,12 +12,21 @@ interface ApiConfigProps {
 
 export const ApiConfig: React.FC<ApiConfigProps> = ({ onNavigate }) => {
   const [apiKey, setApiKey] = useState('');
-  const [status, setStatus] = useState<'IDLE' | 'SAVING' | 'SUCCESS' | 'ERROR'>('IDLE');
+  const [status, setStatus] = useState<'LOADING' | 'IDLE' | 'SAVING' | 'SUCCESS' | 'ERROR'>('LOADING');
   const [testResult, setTestResult] = useState<string>('');
 
   useEffect(() => {
-    const storedKey = localStorage.getItem('GEMINI_API_KEY');
-    if (storedKey) setApiKey(storedKey);
+    const loadApiKey = async () => {
+      try {
+        const storedKey = await dbService.getSetting('GEMINI_API_KEY');
+        if (storedKey) setApiKey(storedKey);
+      } catch (e) {
+        console.error('Failed to load API key:', e);
+      } finally {
+        setStatus('IDLE');
+      }
+    };
+    loadApiKey();
   }, []);
 
   const handleSave = async (e: React.FormEvent) => {
@@ -42,7 +53,8 @@ export const ApiConfig: React.FC<ApiConfigProps> = ({ onNavigate }) => {
         throw new Error("Invalid API Key or Service Unavailable: " + (apiError.message || apiError));
       }
 
-      localStorage.setItem('GEMINI_API_KEY', apiKey);
+      await dbService.setSetting('GEMINI_API_KEY', apiKey);
+      clearApiKeyCache(); // Clear cache so new key is used
       setStatus('SUCCESS');
       setTestResult('Key verified and saved successfully.');
       
@@ -57,14 +69,29 @@ export const ApiConfig: React.FC<ApiConfigProps> = ({ onNavigate }) => {
     }
   };
 
-  const handleClear = () => {
+  const handleClear = async () => {
     if(confirm("Are you sure? This will remove the custom API key.")) {
-      localStorage.removeItem('GEMINI_API_KEY');
-      setApiKey('');
-      setTestResult('Custom key removed. App will attempt to use default environment key.');
-      setStatus('IDLE');
+      try {
+        await dbService.deleteSetting('GEMINI_API_KEY');
+        clearApiKeyCache(); // Clear cache so environment key is used
+        setApiKey('');
+        setTestResult('Custom key removed. App will attempt to use default environment key.');
+        setStatus('IDLE');
+      } catch (e) {
+        console.error('Failed to delete API key:', e);
+        setTestResult('Failed to remove API key.');
+        setStatus('ERROR');
+      }
     }
   };
+
+  if (status === 'LOADING') {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <Loader2 className="w-8 h-8 text-emerald-400 animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="h-full overflow-y-auto">
@@ -90,7 +117,7 @@ export const ApiConfig: React.FC<ApiConfigProps> = ({ onNavigate }) => {
           <h2 className="text-center text-xl font-bold text-white mb-2">Gemini API Key</h2>
           <p className="text-center text-slate-400 text-sm mb-8 px-4">
             If the system cannot access the environment key, it will fall back to the key provided here. 
-            This data is stored locally in your browser.
+            This data is stored securely in the cloud database.
           </p>
 
           <form onSubmit={handleSave} className="space-y-6">
