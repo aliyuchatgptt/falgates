@@ -1,0 +1,7 @@
+{
+  "name": "Falgates Rice Distribution Assigner",
+  "description": "Secure staff allocation system using facial recognition and AI-powered verification for factory distribution units.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
