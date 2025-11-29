@@ -13,6 +13,7 @@ interface StaffRow {
   registered_at: number;
   face_embedding: number[];
   reference_image_base64: string;
+  face_token?: string;
 }
 
 interface CheckInRow {
@@ -41,11 +42,12 @@ function staffRowToMember(row: StaffRow): StaffMember {
     registeredAt: row.registered_at,
     faceEmbedding: row.face_embedding,
     referenceImageBase64: row.reference_image_base64,
+    faceToken: row.face_token,
   };
 }
 
 function staffMemberToRow(member: StaffMember): StaffRow {
-  return {
+  const row: StaffRow = {
     id: member.id,
     full_name: member.fullName,
     assigned_unit: member.assignedUnit,
@@ -53,6 +55,10 @@ function staffMemberToRow(member: StaffMember): StaffRow {
     face_embedding: member.faceEmbedding,
     reference_image_base64: member.referenceImageBase64,
   };
+  if (member.faceToken) {
+    row.face_token = member.faceToken;
+  }
+  return row;
 }
 
 function checkInRowToLog(row: CheckInRow): CheckInLog {
@@ -133,6 +139,32 @@ class SupabaseDatabase {
     
     if (error) {
       throw new Error(`Error deleting staff: ${error.message}`);
+    }
+  }
+
+  async getStaffById(id: string): Promise<StaffMember | null> {
+    const { data, error } = await this.supabase
+      .from('staff')
+      .select('*')
+      .eq('id', id)
+      .single();
+    
+    if (error) {
+      if (error.code === 'PGRST116') return null;
+      throw new Error(`Error fetching staff: ${error.message}`);
+    }
+    
+    return data ? staffRowToMember(data as StaffRow) : null;
+  }
+
+  async updateStaffFaceToken(id: string, faceToken: string): Promise<void> {
+    const { error } = await this.supabase
+      .from('staff')
+      .update({ face_token: faceToken })
+      .eq('id', id);
+    
+    if (error) {
+      throw new Error(`Error updating face token: ${error.message}`);
     }
   }
 

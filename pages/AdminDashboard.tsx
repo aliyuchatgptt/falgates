@@ -1,8 +1,9 @@
 
 import React, { useEffect, useState } from 'react';
 import { dbService } from '../services/db';
+import { removeFaceFromSet } from '../services/faceplusplus';
 import { StaffMember, AppRoute } from '../types';
-import { Trash2, UserPlus, Search, Users, MapPin, Fingerprint, Calendar, Settings } from 'lucide-react';
+import { Trash2, UserPlus, Search, Users, MapPin, Fingerprint, Calendar, Settings, Loader2 } from 'lucide-react';
 
 interface AdminDashboardProps {
   onNavigate: (route: AppRoute) => void;
@@ -22,10 +23,29 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate, show
     loadStaff();
   }, []);
 
+  const [deleting, setDeleting] = useState<string | null>(null);
+
   const handleDelete = async (id: string) => {
     if (confirm('Are you sure you want to remove this staff member?')) {
-      await dbService.deleteStaff(id);
-      loadStaff();
+      setDeleting(id);
+      try {
+        // Find the staff member to get their face_token
+        const staffMember = staff.find(s => s.id === id);
+        
+        // Remove face from Face++ FaceSet if they have a face_token
+        if (staffMember?.faceToken) {
+          await removeFaceFromSet(staffMember.faceToken);
+        }
+        
+        // Delete from database (will cascade to staff_images)
+        await dbService.deleteStaff(id);
+        loadStaff();
+      } catch (e) {
+        console.error('Failed to delete staff:', e);
+        alert('Failed to delete staff member');
+      } finally {
+        setDeleting(null);
+      }
     }
   };
 
@@ -118,10 +138,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate, show
                     <td className="p-5 text-right">
                       <button 
                         onClick={() => handleDelete(member.id)}
-                        className="text-slate-500 hover:text-red-400 transition-colors p-2 hover:bg-slate-800 rounded-lg"
+                        disabled={deleting === member.id}
+                        className="text-slate-500 hover:text-red-400 transition-colors p-2 hover:bg-slate-800 rounded-lg disabled:opacity-50"
                         title="Delete Staff"
                       >
-                        <Trash2 size={20} />
+                        {deleting === member.id ? <Loader2 size={20} className="animate-spin" /> : <Trash2 size={20} />}
                       </button>
                     </td>
                   </tr>
@@ -150,9 +171,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate, show
                     <h3 className="text-white font-bold truncate pr-2">{member.fullName}</h3>
                     <button 
                       onClick={() => handleDelete(member.id)}
-                      className="text-slate-600 hover:text-red-400 p-1"
+                      disabled={deleting === member.id}
+                      className="text-slate-600 hover:text-red-400 p-1 disabled:opacity-50"
                     >
-                      <Trash2 size={18} />
+                      {deleting === member.id ? <Loader2 size={18} className="animate-spin" /> : <Trash2 size={18} />}
                     </button>
                   </div>
                   <p className="text-emerald-500 font-mono text-xs mb-1 flex items-center gap-1">

@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { CameraFrame } from '../components/CameraFrame';
 import { dbService } from '../services/db';
 import { checkImageQuality } from '../services/geminiService';
+import { detectFace, addFaceToSet, hasFaceSet } from '../services/faceplusplus';
 import { DistributionUnit, StaffMember, AppRoute, ImageAngleType } from '../types';
-import { Save, AlertCircle, CheckCircle, Loader2, ArrowLeft, Camera, Fingerprint, User, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Save, AlertCircle, CheckCircle, Loader2, ArrowLeft, Camera, Fingerprint, User, ChevronLeft, ChevronRight, Scan } from 'lucide-react';
 
 interface EnrollmentProps {
   onNavigate: (route: AppRoute) => void;
@@ -34,18 +35,24 @@ export const Enrollment: React.FC<EnrollmentProps> = ({ onNavigate }) => {
   const [capturedPhotos, setCapturedPhotos] = useState<CapturedPhoto[]>([]);
   const [isChecking, setIsChecking] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<string>('');
+  const [faceppAvailable, setFaceppAvailable] = useState(false);
 
   useEffect(() => {
-    const fetchNextId = async () => {
+    const init = async () => {
       try {
         const nextId = await dbService.getNextId();
         setFormData(prev => ({ ...prev, id: nextId }));
+        
+        // Check if Face++ is configured
+        const hasSet = await hasFaceSet();
+        setFaceppAvailable(hasSet);
       } catch (e) {
-        console.error("Failed to generate ID", e);
+        console.error("Failed to initialize:", e);
         setFormData(prev => ({ ...prev, id: 'ERROR' }));
       }
     };
-    fetchNextId();
+    init();
   }, []);
 
   const currentAngle = PHOTO_ANGLES[currentAngleIndex];
@@ -89,34 +96,64 @@ export const Enrollment: React.FC<EnrollmentProps> = ({ onNavigate }) => {
     if (!allPhotosValid || !formData.fullName) return;
 
     setIsSaving(true);
+    setSaveStatus('');
+
     try {
       const mockEmbedding = Array.from({ length: 128 }, () => Math.random());
-      
-      // Use front photo as the primary reference image
       const frontPhoto = capturedPhotos.find(p => p.angleType === 'front');
       
+      let faceToken: string | undefined;
+
+      // Register with Face++ if available
+      if (faceppAvailable) {
+        setSaveStatus('Registering face with Face++...');
+        
+        const detectResult = await detectFace(frontPhoto!.imageBase64);
+        
+        if (detectResult.success && detectResult.faceToken) {
+          faceToken = detectResult.faceToken;
+          
+          // Add to FaceSet
+          const addResult = await addFaceToSet(faceToken, formData.id);
+          
+          if (!addResult.success) {
+            console.warn('Failed to add face to set:', addResult.error);
+            // Continue anyway - we'll still save the face_token
+          }
+        } else {
+          console.warn('Face detection failed:', detectResult.error);
+          // Continue without Face++ registration
+        }
+      }
+
+      setSaveStatus('Saving staff record...');
+
       const newStaff: StaffMember = {
         id: formData.id,
         fullName: formData.fullName,
         assignedUnit: formData.unit,
         registeredAt: Date.now(),
         faceEmbedding: mockEmbedding,
-        referenceImageBase64: frontPhoto!.imageBase64
+        referenceImageBase64: frontPhoto!.imageBase64,
+        faceToken: faceToken,
       };
 
-      // Save staff member first
+      // Save staff member
       await dbService.addStaff(newStaff);
 
       // Save all images to staff_images table
+      setSaveStatus('Saving photos...');
       const imagesToSave = capturedPhotos.map(p => ({
         imageBase64: p.imageBase64,
         angleType: p.angleType,
       }));
       await dbService.addStaffImages(formData.id, imagesToSave);
 
+      setSaveStatus('Complete!');
       onNavigate(AppRoute.ADMIN_DASHBOARD);
-    } catch (err) {
-      alert(err);
+    } catch (err: any) {
+      console.error('Enrollment error:', err);
+      alert(err.message || 'Failed to complete enrollment');
     } finally {
       setIsSaving(false);
     }
@@ -128,7 +165,7 @@ export const Enrollment: React.FC<EnrollmentProps> = ({ onNavigate }) => {
   const canSubmit = isIdReady && isNameReady && allPhotosValid && !isSaving;
 
   let buttonText = "Complete Enrollment";
-  if (isSaving) buttonText = "Registering...";
+  if (isSaving) buttonText = saveStatus || "Registering...";
   else if (!isIdReady) buttonText = "Generating ID...";
   else if (!isNameReady) buttonText = "Enter Staff Name";
   else if (!allPhotosValid) buttonText = `Capture All ${PHOTO_ANGLES.length} Photos`;
@@ -145,6 +182,14 @@ export const Enrollment: React.FC<EnrollmentProps> = ({ onNavigate }) => {
             <p className="text-slate-500 text-sm">Capture 3 photos from different angles for accurate recognition.</p>
           </div>
         </div>
+
+        {/* Face++ Status Banner */}
+        {faceppAvailable && (
+          <div className="bg-blue-950/30 border border-blue-900/50 rounded-xl p-3 mb-6 flex items-center gap-3">
+            <Scan size={20} className="text-blue-400" />
+            <p className="text-blue-300 text-sm">Face++ recognition enabled - faces will be registered automatically</p>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           

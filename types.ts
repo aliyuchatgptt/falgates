@@ -14,6 +14,7 @@ export interface StaffMember {
   registeredAt: number;
   faceEmbedding: number[]; // Mocked vector for local persistence structure
   referenceImageBase64: string; // Primary image for display/thumbnail
+  faceToken?: string; // Face++ face_token for recognition
 }
 
 export type ImageAngleType = 'front' | 'left' | 'right';

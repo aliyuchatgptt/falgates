@@ -1,39 +1,30 @@
 import React, { useState, useEffect } from 'react';
 import { CameraFrame } from '../components/CameraFrame';
 import { dbService } from '../services/db';
-import { verifyIdentityWithConsensus } from '../services/geminiService';
-import { StaffMember, RecognitionResult, StaffImage } from '../types';
-import { Loader2, ShieldCheck, ShieldAlert } from 'lucide-react';
-
-// Cache for staff images to avoid fetching on every verification
-interface StaffWithImages extends StaffMember {
-  images: StaffImage[];
-}
+import { searchFace, hasFaceSet } from '../services/faceplusplus';
+import { StaffMember, RecognitionResult } from '../types';
+import { Loader2, ShieldCheck, ShieldAlert, Scan } from 'lucide-react';
 
 export const Kiosk: React.FC = () => {
   const [mode, setMode] = useState<'IDLE' | 'SCANNING' | 'SUCCESS' | 'FAILURE'>('IDLE');
   const [result, setResult] = useState<RecognitionResult | null>(null);
-  const [staffList, setStaffList] = useState<StaffWithImages[]>([]);
+  const [staffList, setStaffList] = useState<StaffMember[]>([]);
   const [loadingStaff, setLoadingStaff] = useState(true);
+  const [faceppAvailable, setFaceppAvailable] = useState(false);
 
   useEffect(() => {
-    loadStaffWithImages();
+    loadStaff();
   }, []);
 
-  const loadStaffWithImages = async () => {
+  const loadStaff = async () => {
     try {
       setLoadingStaff(true);
       const staff = await dbService.getAllStaff();
+      setStaffList(staff);
       
-      // Load images for each staff member
-      const staffWithImages: StaffWithImages[] = await Promise.all(
-        staff.map(async (s) => {
-          const images = await dbService.getStaffImages(s.id);
-          return { ...s, images };
-        })
-      );
-      
-      setStaffList(staffWithImages);
+      // Check if Face++ is configured
+      const hasSet = await hasFaceSet();
+      setFaceppAvailable(hasSet);
     } catch (e) {
       console.error("Failed to load staff:", e);
     } finally {
@@ -56,32 +47,37 @@ export const Kiosk: React.FC = () => {
     try {
       let foundMatch: RecognitionResult | null = null;
 
-      for (const staff of staffList) {
-        // Get all reference images for this staff member
-        const referenceImages = staff.images.length > 0
-          ? staff.images.map(img => img.imageBase64)
-          : [staff.referenceImageBase64]; // Fallback to primary image if no multi-images
+      if (faceppAvailable) {
+        // Use Face++ Search API
+        const searchResult = await searchFace(liveImage);
 
-        // Use consensus-based verification
-        // Require 2 matches if 3 images exist, otherwise 1 match for legacy single-image enrollments
-        const requiredMatches = referenceImages.length >= 3 ? 2 : 1;
-        const confidenceThreshold = 85;
+        if (searchResult.success && searchResult.matches.length > 0) {
+          const topMatch = searchResult.matches[0];
+          
+          // Use Face++ thresholds for accuracy
+          // 1e-3 threshold = 0.1% false positive rate
+          const threshold = searchResult.thresholds?.['1e-3'] || 65;
+          
+          if (topMatch.confidence >= threshold) {
+            // Find the staff member by face_token or user_id
+            const matchedStaff = staffList.find(s => 
+              s.faceToken === topMatch.faceToken || 
+              s.id === topMatch.userId
+            );
 
-        const verify = await verifyIdentityWithConsensus(
-          liveImage,
-          referenceImages,
-          requiredMatches,
-          confidenceThreshold
-        );
+            if (matchedStaff) {
+              foundMatch = {
+                isMatch: true,
+                confidence: topMatch.confidence,
+                staffMember: matchedStaff,
+                message: `Face++ match: ${topMatch.confidence.toFixed(1)}% confidence`
+              };
+            }
+          }
+        }
 
-        if (verify.match) {
-          foundMatch = {
-            isMatch: true,
-            confidence: verify.confidence,
-            staffMember: staff,
-            message: verify.explanation
-          };
-          break;
+        if (!foundMatch && searchResult.error) {
+          console.warn('Face++ search error:', searchResult.error);
         }
       }
 
@@ -99,7 +95,13 @@ export const Kiosk: React.FC = () => {
         });
 
       } else {
-        setResult({ isMatch: false, confidence: 0, message: "Identity could not be verified. Please ensure you are registered and try in better lighting." });
+        setResult({ 
+          isMatch: false, 
+          confidence: 0, 
+          message: faceppAvailable 
+            ? "Face not recognized. Please ensure you are registered." 
+            : "Face++ not configured. Please set up API credentials in Settings."
+        });
         setMode('FAILURE');
       }
     } catch (e) {
@@ -137,12 +139,22 @@ export const Kiosk: React.FC = () => {
            mode="fullscreen"
         />
 
+        {/* Face++ Status Badge */}
+        {faceppAvailable && mode === 'IDLE' && (
+          <div className="absolute top-4 right-4 z-20 bg-blue-500/20 backdrop-blur-md border border-blue-500/30 rounded-full px-3 py-1.5 flex items-center gap-2">
+            <Scan size={14} className="text-blue-400" />
+            <span className="text-blue-300 text-xs font-medium">Face++ Active</span>
+          </div>
+        )}
+
         {/* Scanning Overlay Effect */}
         {mode === 'SCANNING' && (
           <div className="absolute inset-0 bg-black/40 z-10 flex flex-col items-center justify-center backdrop-blur-sm animate-in fade-in duration-300">
             <Loader2 className="w-16 h-16 text-emerald-400 animate-spin mb-4" />
             <div className="text-emerald-400 font-mono text-xl tracking-widest animate-pulse">PROCESSING</div>
-            <p className="text-slate-400 text-sm mt-2">Verifying against multiple reference images...</p>
+            <p className="text-slate-400 text-sm mt-2">
+              {faceppAvailable ? 'Searching Face++ database...' : 'Analyzing facial features...'}
+            </p>
           </div>
         )}
 
