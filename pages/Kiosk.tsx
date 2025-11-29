@@ -50,20 +50,35 @@ export const Kiosk: React.FC = () => {
       if (faceppAvailable) {
         // Use Face++ Search API
         const searchResult = await searchFace(liveImage);
+        
+        console.log('Face++ Search Result:', JSON.stringify(searchResult, null, 2));
 
         if (searchResult.success && searchResult.matches.length > 0) {
           const topMatch = searchResult.matches[0];
+          
+          console.log('Top Match:', topMatch);
+          console.log('Staff List:', staffList.map(s => ({ id: s.id, name: s.fullName, faceToken: s.faceToken })));
           
           // Use Face++ thresholds for accuracy
           // 1e-3 threshold = 0.1% false positive rate
           const threshold = searchResult.thresholds?.['1e-3'] || 65;
           
           if (topMatch.confidence >= threshold) {
-            // Find the staff member by face_token or user_id
-            const matchedStaff = staffList.find(s => 
-              s.faceToken === topMatch.faceToken || 
-              s.id === topMatch.userId
-            );
+            // Find the staff member - user_id should be the staff ID (e.g., "FG0003")
+            // Face++ returns user_id that we set during enrollment
+            let matchedStaff: StaffMember | undefined;
+            
+            // Primary: Match by user_id (which is the staff ID)
+            if (topMatch.userId) {
+              matchedStaff = staffList.find(s => s.id === topMatch.userId);
+              console.log('Matched by userId:', topMatch.userId, matchedStaff?.fullName);
+            }
+            
+            // Fallback: Match by face_token stored in our database
+            if (!matchedStaff && topMatch.faceToken) {
+              matchedStaff = staffList.find(s => s.faceToken === topMatch.faceToken);
+              console.log('Matched by faceToken:', topMatch.faceToken, matchedStaff?.fullName);
+            }
 
             if (matchedStaff) {
               foundMatch = {
@@ -72,6 +87,8 @@ export const Kiosk: React.FC = () => {
                 staffMember: matchedStaff,
                 message: `Face++ match: ${topMatch.confidence.toFixed(1)}% confidence`
               };
+            } else {
+              console.warn('No staff found for match:', topMatch);
             }
           }
         }
